@@ -1,0 +1,71 @@
+一共分为四个项目：生成的噪声，射频领域，卫星图，超声波频谱。
+
+生成的噪声项目:
+1、
+数据生成器
+
+1.1、
+定义BaseDataProvider这个虚基类，对图像数据集进行裁剪和归一化，重载_process_data和_post_process这两个方法来自定义预处理行为。设置好类变量（channel=1, class=2）便于下面维度的变换，注意后面训练图像的维度为[1,y,x,channels=1], 图像的标志为[1,y,x,class=2](两类分割)
+定义__call__方法（使类实例能像函数那样被调用，所以python中只看调用部分难以区分是函数还是类实例化）：其中定义n来生成多次batch。
+
+1.2、
+继承BaseDataProvider类来定义GrayScaleDataProvider类，重载_next_data函数（生成并归一处理图片）
+
+2、
+构建Unet，定义Unet类（输入：最后一层的channels 和 nclass，这两个变量属于数据生成器的类变量）
+2.1、
+复位图
+定义x，y，keep_prob占位符
+创建conv层，返回最后一层和权重变量：
+--注意中间保存好每层的weight（对应蓝色箭头）,biases,convs,pools,deconv,dw_h_convs,up_h_convs,
+--每一小层用for循环构建，每层的features=16,32,64,32,16
+--第一层的权值大小为Variable=[3,3,1,16]，偏置为constant=[16],然后使用strides=[1,1,1,1],padding=valid的conv2d进行卷积(x*w+b)，再droupout+relu+max_pool。
+--更新weight,biases,convs列表
+--重复上面down layers的操作三大层
+--重复up layers的操作二大层，第一层的权重为[2,2,32,64],偏置为[32],和x=[?,?,?,64]进行conv2d_transpose来进行反卷积（strides=[1,2,2,1],padding=valid），最终输出[?,?*2,?*2,32]的tensor
+--更新up_h_convs,weights,biases,convs等列表
+--最后更新summaries
+
+2.2、
+定义cost函数：将最后层logits和labels变成[-1,class]
+如果损失函数是cross_entropy(交叉熵), 如果有class_weight给出，则直接 (class_weight*flat_labels和)*（flat_ligits flat_labels的交叉熵），最后取均值获得loss值。
+如果损失函数是dice_coefficient（dice系数），公式为 2*(prediction*labels) / （prediction和 + labels和）,宏观公式是 2*intersection / union
+
+2.3、
+定义梯度tf.grandents：上面的cost函数+权重变量variables
+
+2.4、
+在cross_entropy命名空间：定义cross_entropy损失函数
+在results命名空间：定义predicter（像素级别的softmax），accuracy
+
+3、训练
+3.1、
+实例化trainer，然后进行train，接着初始化：定义globel_step和norm_gradients_node变量
+把一开始的loss（其实也是cost），cross_entropy,accuracy添加到summary
+
+3.2、
+初始化optimizer：定义lr，decay_rate，momentum
+添加lr到summary，并把所有的summary融合下成summary_op
+初始化所有变量，并返回这个init，至此全部变量初始化完成，传进sess运行
+
+3.3、
+在sess下运行初始化的init
+生成test数据并进行预测，具体是sess运行predicter生成prediction，sess运行cost生成loss
+上面是没有optimizer优化的初始化预测
+把summary写出来到filewriter上
+
+3.4、
+正式开始epoch运行训练
+生成每个epoch中的每个batch，使用sess运行optimizer，cost，lr，gradient_node
+隔步显示batch训练过程，使用sess运行summary_op,cost，acc，predicter，写入summary
+隔步显示epoch训练过程，并保存预测图
+
+
+4、预测
+重新初始化全局变量
+使用sess恢复model，然后sess运行predicter进行预测
+
+
+
+
+
